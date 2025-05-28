@@ -2,10 +2,12 @@ import { Hono } from "hono";
 import { config } from "dotenv";
 import { getCookie, setCookie } from "hono/cookie";
 import { CookieOptions } from "hono/utils/cookie";
+import { withGoogleAuth } from "./middleware";
 config();
 
 const app = new Hono();
 
+app.use(withGoogleAuth);
 app.get("/ping", (c) => c.text("pong"));
 app.get("/auth/google", (c) => {
   const params = new URLSearchParams({
@@ -26,11 +28,12 @@ app.get("/auth/google", (c) => {
 app.get("/auth/callback", async (c) => {
   const state = c.req.query("state");
   const code = c.req.query("code");
+
   // Validate parameters
   if (!state || !code) {
     return c.text("Missing 'code' or 'state'", 400);
   }
-  console.log(state, process.env.GOOGLE_STATE);
+
   if (state !== process.env.GOOGLE_STATE) {
     return c.text("Invalid state parameter", 403);
   }
@@ -47,35 +50,39 @@ app.get("/auth/callback", async (c) => {
       redirect_uri: process.env.GOOGLE_REDIRECT_URI!,
       grant_type: "authorization_code",
       access_type: "offline",
+      prompt: "consent",
       include_granted_scopes: "true",
     }).toString(),
   });
 
   const json = await tokenRes.json();
-  // console.log(json); // debug
-  const { access_token, refresh_token } = json;
+  const modifiedJson = {
+    ...json,
+    expires_in: new Date(Date.now() + json.expires_in * 1000).toISOString(),
+    // expires_in: new Date(Date.now() + 10 * 1000).toISOString(), // NOTE: Simulat e 10 seconds expiration time to test refresh_tokens
+  };
 
-  const options: CookieOptions = {
+  const opts: CookieOptions = {
     httpOnly: true,
     secure: true,
     path: "/",
+    sameSite: "Strict",
   };
 
-  setCookie(c, "access_token", access_token, options);
-  setCookie(c, "refresh_token", refresh_token, options);
+  setCookie(c, "session", JSON.stringify(json), opts);
   return c.redirect("http://localhost:3000/auth/user");
 });
 
 app.get("/auth/user", async (c) => {
-  const accessToken = getCookie(c, "access_token");
-
-  if (!accessToken) {
+  const session = getCookie(c, "session");
+  if (!session) {
     return c.text("Unauthorized", 401);
   }
+  const { access_token } = JSON.parse(session);
 
   const res = await fetch("https://www.googleapis.com/oauth2/v3/userinfo", {
     headers: {
-      Authorization: `Bearer ${accessToken}`,
+      Authorization: `Bearer ${access_token}`,
     },
   });
 
@@ -84,7 +91,6 @@ app.get("/auth/user", async (c) => {
   }
 
   const user = await res.json();
-  console.log(user);
   const username = user.name || user.email;
 
   return c.text(`Hello, ${username}`);
