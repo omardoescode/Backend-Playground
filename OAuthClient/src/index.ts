@@ -1,25 +1,27 @@
 import { Hono } from "hono";
 import { config } from "dotenv";
-import { getCookie, setCookie } from "hono/cookie";
-import { CookieOptions } from "hono/utils/cookie";
 import { withGoogleAuth } from "./middleware";
+import { setCookie, getCookie } from "./utils";
 config();
 
 const app = new Hono();
 
-app.use(withGoogleAuth);
 app.get("/ping", (c) => c.text("pong"));
 app.get("/auth/google", (c) => {
+  const generatedState = crypto.randomUUID();
+  setCookie(c, "oauth_state", generatedState, { maxAge: 300 /* 5 minutes */ });
+
   const params = new URLSearchParams({
     client_id: process.env.GOOGLE_CLIENT_ID!,
     redirect_uri: process.env.GOOGLE_REDIRECT_URI!,
     response_type: "code",
     scope: "email profile",
-    state: process.env.GOOGLE_STATE!,
+    state: generatedState,
     access_type: "offline",
     prompt: "consent",
     include_granted_scopes: "true",
   });
+
   return c.redirect(
     `https://accounts.google.com/o/oauth2/v2/auth?${params.toString()}`,
   );
@@ -28,13 +30,15 @@ app.get("/auth/google", (c) => {
 app.get("/auth/callback", async (c) => {
   const state = c.req.query("state");
   const code = c.req.query("code");
+  const actualState = getCookie(c, "oauth_state");
 
   // Validate parameters
+  if (!actualState) return c.text("Invalid request", 400);
   if (!state || !code) {
     return c.text("Missing 'code' or 'state'", 400);
   }
 
-  if (state !== process.env.GOOGLE_STATE) {
+  if (state !== actualState) {
     return c.text("Invalid state parameter", 403);
   }
 
@@ -62,18 +66,11 @@ app.get("/auth/callback", async (c) => {
     // expires_in: new Date(Date.now() + 10 * 1000).toISOString(), // NOTE: Simulat e 10 seconds expiration time to test refresh_tokens
   };
 
-  const opts: CookieOptions = {
-    httpOnly: true,
-    secure: true,
-    path: "/",
-    sameSite: "Strict",
-  };
-
-  setCookie(c, "session", JSON.stringify(json), opts);
+  setCookie(c, "session", JSON.stringify(json));
   return c.redirect("http://localhost:3000/auth/user");
 });
 
-app.get("/auth/user", async (c) => {
+app.get("/auth/user", withGoogleAuth, async (c) => {
   const session = getCookie(c, "session");
   if (!session) {
     return c.text("Unauthorized", 401);

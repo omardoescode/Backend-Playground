@@ -1,5 +1,5 @@
 import { MiddlewareHandler } from "hono";
-import { getCookie, setCookie } from "hono/cookie";
+import { getCookie, setCookie } from "./utils";
 
 export const withGoogleAuth: MiddlewareHandler = async (c, next) => {
   const session = getCookie(c, "session");
